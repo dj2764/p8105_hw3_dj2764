@@ -1,0 +1,286 @@
+---
+title: "p8105_hw3_dj2764"
+author: "Daniel Jiao"
+output: github_document
+---
+
+## load library
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(scales)
+library(knitr)
+```
+
+# Problem 1
+
+## load & check dataset
+```{r}
+library(p8105.datasets)
+data("instacart")
+
+glimpse(instacart)
+```
+
+## describe the dataset
+```{r}
+n_obs <- nrow(instacart)
+n_users <- n_distinct(instacart$user_id)
+n_vars <- ncol(instacart)
+```
+The dataset contains `r n_obs` observations from `r n_users` unique users and includes `r n_vars` variables. Each row corresponds to a single product purchased within an order, with key variables such as order_id, user_id, product_name, aisle, and order_hour_of_day.
+
+
+## a) How many aisles are there, and which aisles are the most items ordered from?
+```{r}
+n_aisles <- instacart %>% summarise(n = n_distinct(aisle)) %>% pull(n)
+top_aisles <- instacart %>% count(aisle, sort = TRUE) %>% slice_head(n = 3)
+```
+There are `r n_aisles` distinct values of aisle in the dataset. The three aisles with the highest counts are:
+
+`r top_aisles$aisle[1]` with `r top_aisles$n[1]` orders
+
+`r top_aisles$aisle[2]` with `r top_aisles$n[2]` orders
+
+`r top_aisles$aisle[3]` with `r top_aisles$n[3]` orders
+
+## b) Make a plot that shows the number of items ordered in each aisle, limiting this to aisles with more than 10000 items ordered.
+```{r}
+instacart %>% 
+  count(aisle) %>% 
+  filter(n > 10000) %>% 
+  ggplot(aes(x = reorder(aisle, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Number of Items Ordered per Aisle (>10,000 orders)",
+    x = "Aisle",
+    y = "Number of Items Ordered"
+  ) +
+  theme_minimal()
+```
+
+The bar plot shows which aisles are most frequently ordered from. `r top_aisles$aisle[1]`, `r top_aisles$aisle[2]`, and `r top_aisles$aisle[3]` stand out significantly, confirming that fresh produce and packaged vegetables are the most popular categories.
+
+
+## c) Make a table showing the three most popular items in each of the aisles “baking ingredients”, “dog food care”, and “packaged vegetables fruits”. 
+```{r}
+instacart %>% 
+  filter(aisle %in% c("baking ingredients", "dog food care", "packaged vegetables fruits")) %>% 
+  count(aisle, product_name, sort = TRUE) %>% 
+  group_by(aisle) %>% 
+  slice_max(n, n = 3) %>% 
+  knitr::kable(caption = "Top 3 Most Popular Items per Selected Aisle")
+```
+
+
+## d) Make a table showing the mean hour of the day at which Pink Lady Apples and Coffee Ice Cream are ordered on each day of the week
+```{r}
+instacart %>%
+  filter(product_name %in% c("Pink Lady Apples", "Coffee Ice Cream")) %>%
+  group_by(product_name, order_dow) %>%
+  summarise(mean_hour = mean(order_hour_of_day)) %>%
+  pivot_wider(names_from = order_dow, values_from = mean_hour) %>%
+  knitr::kable(
+    caption = "Mean Hour of Order by Day of Week",
+    col.names = c("Product", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+  )
+```
+
+# Problem 2
+
+```{r}
+zori_raw <- readr::read_csv("./data/Zip_zori_uc_sfrcondomfr_sm_month_NYC.csv")
+zipmap_raw <- readr::read_csv("./data/Zip COdes.csv") %>% clean_names()
+
+# 5 boroughs' county names
+nyc_counties <- c("Bronx", "Kings", "New York", "Queens", "Richmond")  
+
+# standardize ZIP 
+std_zip <- function(x) stringr::str_pad(as.character(x), width = 5, side = "left", pad = "0")
+date_cols <- names(zori_raw)[grepl("^\\d{4}-\\d{2}-\\d{2}$", names(zori_raw))]
+
+# Zillow dataset
+zori_nyc_long <- zori_raw %>%
+  rename(zip = RegionName,
+         county = CountyName,
+         state = State) %>%
+  mutate(zip = std_zip(zip),
+          county = str_trim(str_remove(county, "\\s*County$")))%>%
+# Long format
+  pivot_longer(
+    cols = all_of(date_cols),
+    names_to  = "date_str",
+    values_to = "zori"
+  ) %>%
+  mutate(
+    # Change to beginning of the month
+    date = floor_date(as.Date(date_str), "month"),
+    borough = case_when(
+      county == "Bronx"    ~ "Bronx",
+      county == "Kings"    ~ "Brooklyn",
+      county == "New York" ~ "Manhattan",
+      county == "Queens"   ~ "Queens",
+      county == "Richmond" ~ "Staten Island",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+
+  
+  filter(state %in% c("NY", "New York"), county %in% nyc_counties) %>%
+  select(zip, borough, county, any_of(c("City","Metro")), date, zori) %>%
+  arrange(zip, date)
+
+# Take out useless variables
+zori_nyc_long <- zori_nyc_long %>% select(-any_of(c("Metro","metro")),- county,- City)
+
+
+
+zipmap <- zipmap_raw %>%
+  mutate(
+    zip = std_zip(zip_code),
+    # take out 'county'
+    county  = str_remove(str_to_title(county), "\\s*County$"),
+    borough = recode(county,
+      "Bronx"    = "Bronx",
+      "Kings"    = "Brooklyn",
+      "New York" = "Manhattan",
+      "Queens"   = "Queens",
+      "Richmond" = "Staten Island",
+      .default   = NA_character_
+    )
+  ) %>%
+  select(zip, borough, neighborhood) %>%
+  distinct()
+
+
+zori_nyc <- zori_nyc_long %>%
+  left_join(zipmap, by = c("zip","borough")) %>%
+  relocate(zip, borough, neighborhood, date, zori) %>%
+  filter(!is.na(zori))
+
+zori_nyc
+```
+
+
+```{r}
+# Define the target 116-month window explicitly
+target_months <- seq(as.Date("2015-01-01"), as.Date("2024-08-01"), by = "month")
+n_target_months <- length(target_months)  # should be 116
+
+# Count how many months each ZIP appears in this window
+zip_month_counts <- zori_nyc %>%
+  filter(date %in% target_months) %>%
+  count(zip, name = "n_months")
+
+# Counts of interest
+n_zip_116  <- sum(zip_month_counts$n_months == n_target_months)
+n_zip_lt10 <- sum(zip_month_counts$n_months < 10)
+
+# (Optional) example ZIPs to reference inline if needed
+example_full_zip   <- zip_month_counts %>% filter(n_months == n_target_months) %>% slice_head(n = 1) %>% pull(zip)
+example_sparse_zip <- zip_month_counts %>% arrange(n_months) %>% slice_head(n = 1) %>% pull(zip)
+```
+
+From `r format(min(target_months), "%Y-%m")` to `r format(max(target_months), "%Y-%m")` there are `r n_target_months` months.
+
+ZIPs observed in all `r n_target_months` months: `r n_zip_116`.
+
+ZIPs observed fewer than 10 times: `r n_zip_lt10`.
+
+ZIPs that are rarely observed typically correspond to non-residential or PO-Box-heavy ZIPs, new/retired ZIPs or places with insufficient listing volume for a stable ZORI; ZIPs with complete coverage tend to be stable residential areas with adequate rental inventory.
+
+
+```{r}
+borough_year_tbl <- zori_nyc %>%
+  mutate(year = year(date)) %>%
+  group_by(borough, year) %>%
+  summarise(avg_rent = mean(zori, na.rm = TRUE), .groups = "drop") %>%
+  arrange(borough, year)
+
+# Pretty table wide-format with $ formatting
+borough_year_tbl %>%
+  mutate(avg_rent = dollar(avg_rent)) %>%
+  tidyr::pivot_wider(names_from = year, values_from = avg_rent) %>%
+  kable(caption = "Average ZORI by Borough and Year (NYC)")
+```
+Across the observed years, the largest net increase (first→last available year) occurs in `r borough_year_tbl %>% group_by(borough) %>% summarise(delta = last(avg_rent) - first(avg_rent)) %>% arrange(desc(delta)) %>% slice(1) %>% pull(borough)`.
+A pandemic dip is visible around 2020–2021, especially for `r borough_year_tbl %>% group_by(borough) %>% summarise(drop = min(avg_rent) - max(avg_rent[year <= 2019])) %>% arrange(drop) %>% slice(1) %>% pull(borough)`, followed by a rebound into 2022–2024. Outer-boroughs such as Brooklyn and Queens show steadier growth, while Manhattan exhibits bigger swings.
+
+
+
+```{r}
+# Borough monthly medians for a clean overlay
+borough_month_median <- zori_nyc %>%
+  group_by(borough, date) %>%
+  summarise(zori_med = median(zori, na.rm = TRUE), .groups = "drop")
+
+p_zip_lines <- zori_nyc %>%
+  ggplot(aes(x = date, y = zori, group = zip)) +
+  geom_line(alpha = 0.12) +  # many thin ZIP lines
+  geom_line(data = borough_month_median,
+            aes(y = zori_med, group = borough),
+            linewidth = 1) +  # bold borough median
+  facet_wrap(~ borough, ncol = 2, scales = "free_y") +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "NYC ZIP-level ZORI (thin) with Borough Monthly Median (bold)",
+    x = "Year", y = "ZORI (approx. $)"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_zip_lines
+
+```
+
+```{r}
+zip_2023_avg <- zori_nyc %>%
+  filter(lubridate::year(date) == 2023) %>%
+  group_by(zip, borough) %>%
+  summarise(avg_2023 = mean(zori, na.rm = TRUE), .groups = "drop")
+
+p_2023_dist <- zip_2023_avg %>%
+  ggplot(aes(x = borough, y = avg_2023)) +
+  geom_violin(trim = FALSE, alpha = 0.2) +
+  geom_boxplot(width = 0.18, outlier.shape = NA) +
+  stat_summary(fun = median, geom = "point", size = 2) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Distribution of ZIP-level Average ZORI in 2023 by Borough",
+    x = "Borough", y = "Average ZORI in 2023 (approx. $)"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_2023_dist
+```
+
+
+```{r}
+dir.create("results", showWarnings = FALSE)
+
+# Save individual panels
+ggsave("results/zillow_zip_trajectories.png", p_zip_lines, width = 10, height = 8, dpi = 300)
+ggsave("results/zillow_2023_distributions.png", p_2023_dist, width = 10, height = 5, dpi = 300)
+
+# Try combining without installing anything new
+combined_path <- "results/zillow_combined.png"
+
+if (requireNamespace("patchwork", quietly = TRUE)) {
+  combined_plot <- patchwork::wrap_plots(
+    p_zip_lines, p_2023_dist, ncol = 1, heights = c(2, 1)
+  ) + patchwork::plot_annotation(
+    title = "NYC ZORI — ZIP Trajectories (2015–2024) and 2023 ZIP Distributions"
+  )
+  ggsave(combined_path, combined_plot, width = 10, height = 12, dpi = 300)
+} else {
+  # Fallback: if patchwork isn't installed, we already saved both panels separately.
+  # You can submit the two-panel files or combine them outside R.
+  combined_path <- c("results/zillow_zip_trajectories.png",
+                     "results/zillow_2023_distributions.png")
+}
+
+combined_path
+
+```
+
